@@ -1,0 +1,360 @@
+<title>Gerstner Water Demo</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: full-bleed WebGL ocean, one frosted control panel floating top-left */
+  :root {
+    --panel: rgba(8, 20, 30, 0.62);
+    --panel-line: rgba(160, 210, 230, 0.18);
+    --ink: #e8f3f7;
+    --ink-dim: #9bb7c2;
+    --accent: #5fd0e0;
+    --track: rgba(160, 210, 230, 0.22);
+    --f-body: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+    --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; }
+  body { background: #0a1620; color: var(--ink); font-family: var(--f-body); overflow: hidden; }
+  canvas#gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+  .panel {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 16px);
+    left: 16px;
+    width: min(300px, calc(100% - 32px));
+    background: var(--panel);
+    border: 1px solid var(--panel-line);
+    border-radius: 14px;
+    backdrop-filter: blur(14px) saturate(1.2);
+    -webkit-backdrop-filter: blur(14px) saturate(1.2);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  }
+  .panel summary {
+    list-style: none; cursor: pointer;
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+    padding: 14px 16px;
+  }
+  .panel summary::-webkit-details-marker { display: none; }
+  .panel summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 14px; }
+  .panel h1 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: 0.02em; }
+  .panel .toggle { font-family: var(--f-mono); font-size: 11px; color: var(--ink-dim); }
+  .panel[open] .toggle::after { content: "閉じる"; }
+  .panel:not([open]) .toggle::after { content: "設定"; }
+
+  .body { display: grid; gap: 14px; padding: 0 16px 16px; }
+  .lede { margin: 0; font-size: 12px; line-height: 1.7; color: var(--ink-dim); }
+
+  .presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .presets button, .actions button {
+    font: 500 12px var(--f-body); color: var(--ink);
+    background: transparent; border: 1px solid var(--panel-line); border-radius: 8px;
+    padding: 7px 0; cursor: pointer;
+  }
+  .presets button[aria-pressed="true"] { background: var(--accent); color: #062029; border-color: var(--accent); }
+  .presets button:focus-visible, .actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .ctrl { display: grid; gap: 6px; }
+  .ctrl label { display: flex; justify-content: space-between; font-size: 12px; }
+  .ctrl output { font-family: var(--f-mono); font-size: 11px; color: var(--accent); font-variant-numeric: tabular-nums; }
+  input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
+
+  .actions { display: flex; gap: 6px; }
+  .actions button { flex: 1; }
+  .hint { margin: 0; font-family: var(--f-mono); font-size: 10.5px; color: var(--ink-dim); letter-spacing: 0.02em; }
+</style>
+
+<canvas id="gl" aria-label="Gerstner波で動く海面の3Dシーン"></canvas>
+
+<details class="panel" id="panel" open>
+  <summary><h1>Gerstner Water</h1><span class="toggle"></span></summary>
+  <div class="body">
+    <p class="lede">4本のGerstner波で頂点を動かし、フレネル反射・空の映り込み・太陽の鏡面反射・波頭の泡をシェーダーで描いています。</p>
+    <div class="presets" role="group" aria-label="プリセット">
+      <button type="button" data-preset="clear" aria-pressed="true">晴天</button>
+      <button type="button" data-preset="dusk" aria-pressed="false">夕暮れ</button>
+      <button type="button" data-preset="storm" aria-pressed="false">荒天</button>
+    </div>
+    <div class="ctrl">
+      <label for="scale">波の大きさ <output id="scaleOut"></output></label>
+      <input id="scale" type="range" min="0.4" max="2.2" step="0.05" value="1">
+    </div>
+    <div class="ctrl">
+      <label for="steep">波頭の鋭さ <output id="steepOut"></output></label>
+      <input id="steep" type="range" min="0" max="1.4" step="0.05" value="0.8">
+    </div>
+    <div class="ctrl">
+      <label for="speed">速さ <output id="speedOut"></output></label>
+      <input id="speed" type="range" min="0" max="2.5" step="0.05" value="1">
+    </div>
+    <div class="ctrl">
+      <label for="ripple">さざ波 <output id="rippleOut"></output></label>
+      <input id="ripple" type="range" min="0" max="2" step="0.05" value="1">
+    </div>
+    <div class="ctrl">
+      <label for="sun">太陽の高度 <output id="sunOut"></output></label>
+      <input id="sun" type="range" min="1" max="70" step="1" value="32">
+    </div>
+    <div class="actions">
+      <button type="button" id="pause">一時停止</button>
+    </div>
+    <p class="hint">ドラッグで視点回転 / ピンチ・ホイールでズーム</p>
+  </div>
+</details>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(() => {
+  const canvas = document.getElementById('gl');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(55, 1, 0.5, 6000);
+  camera.position.set(0, 14, 46);
+
+  const controls = new THREE.OrbitControls(camera, canvas);
+  controls.target.set(0, 2, 0);
+  controls.enableDamping = true;
+  controls.maxPolarAngle = Math.PI * 0.485;
+  controls.minDistance = 8;
+  controls.maxDistance = 220;
+  controls.enablePan = false;
+
+  // ---- 共有uniform ----
+  const lin = (r, g, b) => new THREE.Vector3(Math.pow(r, 2.2), Math.pow(g, 2.2), Math.pow(b, 2.2));
+  const U = {
+    uTime:    { value: 0 },
+    uScale:   { value: 1 },
+    uSteep:   { value: 0.8 },
+    uSpeed:   { value: 1 },
+    uRipple:  { value: 1 },
+    uSunDir:  { value: new THREE.Vector3() },
+    uSunColor:{ value: new THREE.Vector3() },
+    uZenith:  { value: new THREE.Vector3() },
+    uHorizon: { value: new THREE.Vector3() },
+    uDeep:    { value: new THREE.Vector3() },
+    uShallow: { value: new THREE.Vector3() },
+  };
+
+  // 空の色を返すGLSL（空ドームと水面の反射の両方で使う）
+  const SKY_GLSL = `
+    uniform vec3 uSunDir, uSunColor, uZenith, uHorizon;
+    vec3 skyColor(vec3 d) {
+      float y = max(d.y, 0.0);
+      vec3 col = mix(uHorizon, uZenith, pow(y, 0.45));
+      float s = max(dot(d, uSunDir), 0.0);
+      col += uSunColor * (pow(s, 900.0) * 10.0 + pow(s, 12.0) * 0.35 + pow(s, 3.0) * 0.08);
+      return col;
+    }
+    vec3 aces(vec3 x) {
+      return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+    }
+    vec3 toScreen(vec3 c) { return pow(aces(c), vec3(1.0 / 2.2)); }
+  `;
+
+  // ---- 空ドーム ----
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(4000, 48, 24),
+    new THREE.ShaderMaterial({
+      uniforms: U, side: THREE.BackSide, depthWrite: false,
+      vertexShader: `
+        varying vec3 vDir;
+        void main() {
+          vDir = normalize(position);
+          vec4 p = modelViewMatrix * vec4(position, 1.0);
+          gl_Position = projectionMatrix * p;
+        }`,
+      fragmentShader: SKY_GLSL + `
+        varying vec3 vDir;
+        void main() {
+          vec3 d = normalize(vDir);
+          vec3 c = d.y < 0.0 ? uHorizon * 0.6 : skyColor(d);
+          gl_FragColor = vec4(toScreen(c), 1.0);
+        }`
+    })
+  );
+  scene.add(sky);
+
+  // ---- 水面 ----
+  const geo = new THREE.PlaneGeometry(1400, 1400, 600, 600);
+  geo.rotateX(-Math.PI / 2);
+
+  const waterMat = new THREE.ShaderMaterial({
+    uniforms: U,
+    vertexShader: `
+      uniform float uTime, uScale, uSteep, uSpeed;
+      varying vec3 vWorld;
+      varying vec3 vNormal;
+      varying float vHeight;
+
+      // wave: xy=進行方向, z=鋭さ, w=波長
+      vec3 gerstner(vec4 wave, vec3 p, inout vec3 tangent, inout vec3 binormal) {
+        float steep = wave.z * uSteep;
+        float lambda = wave.w * uScale;
+        float k = 6.28318 / lambda;
+        float c = sqrt(9.8 / k);
+        vec2 d = normalize(wave.xy);
+        float f = k * (dot(d, p.xz) - c * uTime * uSpeed);
+        float a = steep / k;
+        float sf = sin(f), cf = cos(f);
+        tangent  += vec3(-d.x * d.x * steep * sf, d.x * steep * cf, -d.x * d.y * steep * sf);
+        binormal += vec3(-d.x * d.y * steep * sf, d.y * steep * cf, -d.y * d.y * steep * sf);
+        return vec3(d.x * a * cf, a * sf, d.y * a * cf);
+      }
+
+      void main() {
+        vec3 p = (modelMatrix * vec4(position, 1.0)).xyz;
+        vec3 tangent = vec3(1.0, 0.0, 0.0);
+        vec3 binormal = vec3(0.0, 0.0, 1.0);
+        vec3 disp = vec3(0.0);
+        disp += gerstner(vec4( 1.0,  0.25, 0.22, 64.0), p, tangent, binormal);
+        disp += gerstner(vec4( 0.6,  0.9,  0.18, 33.0), p, tangent, binormal);
+        disp += gerstner(vec4(-0.3,  1.0,  0.15, 19.0), p, tangent, binormal);
+        disp += gerstner(vec4( 0.9, -0.5,  0.12, 11.5), p, tangent, binormal);
+        p += disp;
+        vHeight = disp.y;
+        vNormal = normalize(cross(binormal, tangent));
+        vWorld = p;
+        gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+      }`,
+    fragmentShader: SKY_GLSL + `
+      uniform float uTime, uScale, uSteep, uSpeed, uRipple;
+      uniform vec3 uDeep, uShallow;
+      varying vec3 vWorld;
+      varying vec3 vNormal;
+      varying float vHeight;
+
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float vnoise(vec2 p) {
+        vec2 i = floor(p), f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x),
+                   mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+      }
+
+      void main() {
+        vec3 toCam = cameraPosition - vWorld;
+        float dist = length(toCam);
+        vec3 V = toCam / dist;
+
+        // 細かいさざ波：方向の違う正弦波の傾きを法線に足す
+        vec2 g = vec2(0.0);
+        float freq = 0.55;
+        for (int i = 0; i < 7; i++) {
+          float ang = float(i) * 2.39996 + 0.4;
+          vec2 dir = vec2(cos(ang), sin(ang));
+          float ph = dot(dir, vWorld.xz) * freq + uTime * uSpeed * sqrt(9.8 * freq);
+          g += dir * cos(ph) * 0.07;
+          freq *= 1.62;
+        }
+        float fade = exp(-dist * 0.006);
+        vec3 N = normalize(vNormal + vec3(-g.x, 0.0, -g.y) * uRipple * fade);
+
+        vec3 L = normalize(uSunDir);
+        vec3 R = reflect(-V, N);
+        R.y = max(R.y, 0.02);
+
+        // フレネル（Schlick近似、水のF0≈0.02）
+        float cosT = clamp(dot(N, V), 0.0, 1.0);
+        float fresnel = 0.02 + 0.98 * pow(1.0 - cosT, 5.0);
+
+        // 水中の色：波頭ほど光が透けて浅い色に
+        float crest = clamp(vHeight / (2.4 * uScale + 0.001) * 0.5 + 0.5, 0.0, 1.0);
+        float lit = 0.35 + 0.65 * max(dot(N, L), 0.0);
+        vec3 water = mix(uDeep, uShallow, crest * crest) * lit * (0.4 + uSunColor.r * 0.6);
+
+        vec3 col = mix(water, skyColor(normalize(R)), fresnel);
+
+        // 太陽の鏡面ハイライト
+        col += uSunColor * pow(max(dot(R, L), 0.0), 500.0) * 6.0;
+
+        // 波頭の泡
+        float foamMask = smoothstep(0.62, 0.9, crest) * smoothstep(0.35, 1.2, uSteep);
+        float n = vnoise(vWorld.xz * 0.35 + uTime * 0.3) * 0.6 + vnoise(vWorld.xz * 1.3 - uTime * 0.2) * 0.4;
+        float foam = foamMask * smoothstep(0.35, 0.75, n);
+        col = mix(col, vec3(0.85, 0.9, 0.92) * (0.5 + 0.5 * uSunColor.g), foam * 0.75);
+
+        // 遠景を地平線の色に溶かす
+        float fog = 1.0 - exp(-dist * 0.0022);
+        col = mix(col, uHorizon, fog * fog);
+
+        gl_FragColor = vec4(toScreen(col), 1.0);
+      }`
+  });
+  scene.add(new THREE.Mesh(geo, waterMat));
+
+  // ---- UI ----
+  const PRESETS = {
+    clear: { zenith: [0.16, 0.38, 0.72], horizon: [0.72, 0.84, 0.93], sun: [1.0, 0.96, 0.88], sunI: 1.0,
+             deep: [0.0, 0.07, 0.13], shallow: [0.0, 0.42, 0.48], elev: 32, scale: 1.0, steep: 0.8, speed: 1.0 },
+    dusk:  { zenith: [0.12, 0.13, 0.32], horizon: [1.0, 0.58, 0.32], sun: [1.0, 0.62, 0.32], sunI: 1.3,
+             deep: [0.03, 0.04, 0.09], shallow: [0.18, 0.2, 0.3], elev: 4, scale: 0.9, steep: 0.6, speed: 0.8 },
+    storm: { zenith: [0.32, 0.36, 0.4], horizon: [0.58, 0.61, 0.63], sun: [0.75, 0.78, 0.8], sunI: 0.45,
+             deep: [0.02, 0.07, 0.08], shallow: [0.12, 0.28, 0.28], elev: 24, scale: 1.7, steep: 1.25, speed: 1.3 },
+  };
+
+  const $ = id => document.getElementById(id);
+  const sliders = {
+    scale:  { el: $('scale'),  out: $('scaleOut'),  fmt: v => '×' + v.toFixed(2), apply: v => U.uScale.value = v },
+    steep:  { el: $('steep'),  out: $('steepOut'),  fmt: v => v.toFixed(2),       apply: v => U.uSteep.value = v },
+    speed:  { el: $('speed'),  out: $('speedOut'),  fmt: v => '×' + v.toFixed(2), apply: v => U.uSpeed.value = v },
+    ripple: { el: $('ripple'), out: $('rippleOut'), fmt: v => v.toFixed(2),       apply: v => U.uRipple.value = v },
+    sun:    { el: $('sun'),    out: $('sunOut'),    fmt: v => v.toFixed(0) + '°', apply: v => setSun(v) },
+  };
+  function setSun(deg) {
+    const e = THREE.MathUtils.degToRad(deg), az = THREE.MathUtils.degToRad(-20);
+    U.uSunDir.value.set(Math.cos(e) * Math.sin(az), Math.sin(e), -Math.cos(e) * Math.cos(az)).normalize();
+  }
+  function sync(key) {
+    const s = sliders[key], v = parseFloat(s.el.value);
+    s.out.textContent = s.fmt(v); s.apply(v);
+  }
+  Object.keys(sliders).forEach(k => { sliders[k].el.addEventListener('input', () => sync(k)); sync(k); });
+
+  function applyPreset(name) {
+    const p = PRESETS[name];
+    U.uZenith.value.copy(lin(...p.zenith));
+    U.uHorizon.value.copy(lin(...p.horizon));
+    U.uSunColor.value.copy(lin(...p.sun)).multiplyScalar(p.sunI);
+    U.uDeep.value.copy(lin(...p.deep));
+    U.uShallow.value.copy(lin(...p.shallow));
+    sliders.sun.el.value = p.elev;
+    sliders.scale.el.value = p.scale;
+    sliders.steep.el.value = p.steep;
+    sliders.speed.el.value = p.speed;
+    ['sun', 'scale', 'steep', 'speed'].forEach(sync);
+    document.querySelectorAll('[data-preset]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.preset === name)));
+  }
+  document.querySelectorAll('[data-preset]').forEach(b => b.addEventListener('click', () => applyPreset(b.dataset.preset)));
+  applyPreset('clear');
+
+  // 小さい画面では最初は折りたたむ
+  if (window.innerWidth < 560) $('panel').open = false;
+
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let running = !reduce;
+  const pauseBtn = $('pause');
+  const syncPause = () => pauseBtn.textContent = running ? '一時停止' : '再生';
+  pauseBtn.addEventListener('click', () => { running = !running; syncPause(); });
+  syncPause();
+
+  function resize() {
+    const w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  const clock = new THREE.Clock();
+  U.uTime.value = 3.0;
+  renderer.setAnimationLoop(() => {
+    const dt = Math.min(clock.getDelta(), 0.1);
+    if (running) U.uTime.value += dt;
+    controls.update();
+    renderer.render(scene, camera);
+  });
+})();
+</script>
